@@ -223,10 +223,7 @@ mod tests {
         let xyz = &perp_dexs[0];
         assert_eq!(xyz.name, "xyz");
         assert_eq!(xyz.full_name, "XYZ");
-        assert_eq!(
-            xyz.deployer,
-            "0x88806a71d74ad0a510b350545c9ae490912f0888"
-        );
+        assert_eq!(xyz.deployer, "0x88806a71d74ad0a510b350545c9ae490912f0888");
         assert_eq!(
             xyz.oracle_updater,
             Some("0x1234567890545d1df9ee64b35fdd16966e08acec".to_string())
@@ -298,5 +295,43 @@ mod tests {
         assert_eq!(perp_dexs[2].name, "xyz");
         assert!(perp_dexs[2].oracle_updater.is_some());
         assert!(perp_dexs[2].fee_recipient.is_some());
+    }
+
+    #[test]
+    fn test_order_status_response_parsing() {
+        // Test parsing actual order status response with canceled order
+        let json = r#"{"status":"order","order":{"order":{"coin":"flxn:TSLA","side":"B","limitPx":"456.29","sz":"0.54","oid":42093469136,"timestamp":1762031083239,"triggerCondition":"N/A","isTrigger":false,"triggerPx":"0.0","children":[],"isPositionTpsl":false,"reduceOnly":false,"orderType":"Limit","origSz":"0.54","tif":"Gtc","cloid":"0x50acfaef35de4ac69e98f617be43fa48"},"status":"canceled","statusTimestamp":1762031116587}}"#;
+
+        let response: OrderStatusResponse = serde_json::from_str(json).unwrap();
+
+        // Check top-level status
+        assert_eq!(response.status, "order");
+
+        // Check order is present
+        let order = response.order.expect("Order should be present");
+
+        // Check order status and timestamp
+        assert_eq!(order.status, "canceled");
+        assert_eq!(order.status_timestamp, 1762031116587);
+
+        // Check order details
+        assert_eq!(order.order.coin, "flxn:TSLA");
+        assert_eq!(order.order.side, "B");
+        assert_eq!(order.order.limit_px, "456.29");
+        assert_eq!(order.order.sz, "0.54");
+        assert_eq!(order.order.oid, 42093469136);
+        assert_eq!(order.order.timestamp, 1762031083239);
+        assert_eq!(order.order.trigger_condition, "N/A");
+        assert!(!order.order.is_trigger);
+        assert_eq!(order.order.trigger_px, "0.0");
+        assert!(!order.order.is_position_tpsl);
+        assert!(!order.order.reduce_only);
+        assert_eq!(order.order.order_type, "Limit");
+        assert_eq!(order.order.orig_sz, "0.54");
+        assert_eq!(order.order.tif, "Gtc");
+        assert_eq!(
+            order.order.cloid,
+            Some("0x50acfaef35de4ac69e98f617be43fa48".to_string())
+        );
     }
 }

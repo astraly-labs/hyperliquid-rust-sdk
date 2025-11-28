@@ -37,7 +37,7 @@ async fn open_orders_example(info_client: &InfoClient) {
 
     info!(
         "Open order data for {user}: {:?}",
-        info_client.open_orders(user).await.unwrap()
+        info_client.open_orders(user, None).await.unwrap()
     );
 }
 

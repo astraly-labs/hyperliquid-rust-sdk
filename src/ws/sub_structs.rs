@@ -30,6 +30,13 @@ pub struct L2BookData {
 }
 
 #[derive(Deserialize, Clone, Debug)]
+pub struct BboData {
+    pub coin: String,
+    pub time: u64,
+    pub bbo: Vec<BookLevel>,
+}
+
+#[derive(Deserialize, Clone, Debug)]
 pub struct AllMidsData {
     pub mids: HashMap<String, String>,
 }

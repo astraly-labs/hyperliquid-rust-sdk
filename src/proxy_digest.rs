@@ -1,5 +1,6 @@
 // For synchronous signing.
 // Needed to duplicate our own copy because it wasn't possible to import from ethers-signers.
+#![allow(deprecated)]
 use ethers::prelude::k256::{
     elliptic_curve::generic_array::GenericArray,
     sha2::{
@@ -28,6 +29,7 @@ where
     GenericArray<u8, <D as OutputSizeUser>::OutputSize>: Copy,
 {
     fn from(src: H256) -> Self {
+        #[allow(deprecated)]
         ProxyDigest::Proxy(*GenericArray::from_slice(src.as_bytes()))
     }
 }

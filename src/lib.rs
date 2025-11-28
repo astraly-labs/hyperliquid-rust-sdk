@@ -4,7 +4,6 @@ mod errors;
 mod exchange;
 mod helpers;
 mod info;
-mod market_maker;
 mod meta;
 mod prelude;
 mod proxy_digest;
@@ -16,7 +15,6 @@ pub use errors::Error;
 pub use exchange::*;
 pub use helpers::{bps_diff, truncate_float, BaseUrl};
 pub use info::{info_client::*, *};
-pub use market_maker::*;
 pub use meta::*;
 pub use ws::*;
 

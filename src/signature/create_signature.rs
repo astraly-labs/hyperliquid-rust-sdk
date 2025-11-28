@@ -39,8 +39,8 @@ fn sign_hash(hash: H256, wallet: &LocalWallet) -> Result<Signature> {
 
     let r_bytes: FieldBytes<Secp256k1> = sig.r().into();
     let s_bytes: FieldBytes<Secp256k1> = sig.s().into();
-    let r = U256::from_big_endian(r_bytes.as_slice());
-    let s = U256::from_big_endian(s_bytes.as_slice());
+    let r = U256::from_big_endian(&r_bytes);
+    let s = U256::from_big_endian(&s_bytes);
 
     Ok(Signature { r, s, v })
 }

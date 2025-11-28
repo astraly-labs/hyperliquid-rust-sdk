@@ -7,8 +7,7 @@ use crate::{
     meta::{Meta, PerpDexMeta, SpotMeta, SpotMetaAndAssetCtxs},
     prelude::*,
     req::HttpClient,
-    ws::{Subscription, WsManager},
-    ActiveAssetDataResponse, BaseUrl, Error, Message, OrderStatusResponse, ReferralResponse,
+    ActiveAssetDataResponse, BaseUrl, Error, OrderStatusResponse, ReferralResponse,
     UserFeesResponse, UserFundingResponse, UserTokenBalanceResponse,
 };
 
@@ -16,7 +15,6 @@ use ethers::types::H160;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use tokio::sync::mpsc::UnboundedSender;
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -54,6 +52,7 @@ pub enum InfoRequest {
     },
     OpenOrders {
         user: H160,
+        dex: Option<String>,
     },
     OrderStatus {
         user: H160,
@@ -109,76 +108,20 @@ pub enum InfoRequest {
 #[derive(Debug)]
 pub struct InfoClient {
     pub http_client: HttpClient,
-    pub(crate) ws_manager: Option<WsManager>,
-    reconnect: bool,
 }
 
 impl InfoClient {
     pub async fn new(client: Option<Client>, base_url: Option<BaseUrl>) -> Result<InfoClient> {
-        Self::new_internal(client, base_url, false).await
+        Self::new_internal(client, base_url).await
     }
 
-    pub async fn with_reconnect(
-        client: Option<Client>,
-        base_url: Option<BaseUrl>,
-    ) -> Result<InfoClient> {
-        Self::new_internal(client, base_url, true).await
-    }
-
-    async fn new_internal(
-        client: Option<Client>,
-        base_url: Option<BaseUrl>,
-        reconnect: bool,
-    ) -> Result<InfoClient> {
+    async fn new_internal(client: Option<Client>, base_url: Option<BaseUrl>) -> Result<InfoClient> {
         let client = client.unwrap_or_default();
         let base_url = base_url.unwrap_or(BaseUrl::Mainnet).get_url();
 
         Ok(InfoClient {
             http_client: HttpClient { client, base_url },
-            ws_manager: None,
-            reconnect,
         })
-    }
-
-    pub async fn subscribe(
-        &mut self,
-        subscription: Subscription,
-        sender_channel: UnboundedSender<Message>,
-    ) -> Result<u32> {
-        if self.ws_manager.is_none() {
-            let ws_manager = WsManager::new(
-                format!("ws{}/ws", &self.http_client.base_url[4..]),
-                self.reconnect,
-            )
-            .await?;
-            self.ws_manager = Some(ws_manager);
-        }
-
-        let identifier =
-            serde_json::to_string(&subscription).map_err(|e| Error::JsonParse(e.to_string()))?;
-
-        self.ws_manager
-            .as_mut()
-            .ok_or(Error::WsManagerNotFound)?
-            .add_subscription(identifier, sender_channel)
-            .await
-    }
-
-    pub async fn unsubscribe(&mut self, subscription_id: u32) -> Result<()> {
-        if self.ws_manager.is_none() {
-            let ws_manager = WsManager::new(
-                format!("ws{}/ws", &self.http_client.base_url[4..]),
-                self.reconnect,
-            )
-            .await?;
-            self.ws_manager = Some(ws_manager);
-        }
-
-        self.ws_manager
-            .as_mut()
-            .ok_or(Error::WsManagerNotFound)?
-            .remove_subscription(subscription_id)
-            .await
     }
 
     async fn send_info_request<T: for<'a> Deserialize<'a>>(
@@ -192,9 +135,31 @@ impl InfoClient {
         serde_json::from_str(&return_data).map_err(|e| Error::JsonParse(e.to_string()))
     }
 
-    pub async fn open_orders(&self, address: H160) -> Result<Vec<OpenOrdersResponse>> {
-        let input = InfoRequest::OpenOrders { user: address };
+    pub async fn open_orders(
+        &self,
+        address: H160,
+        perp_dex: Option<String>,
+    ) -> Result<Vec<OpenOrdersResponse>> {
+        let input = InfoRequest::OpenOrders {
+            user: address,
+            dex: perp_dex,
+        };
         self.send_info_request(input).await
+    }
+
+    pub async fn asset_name_to_asset_id(&self, perp_dex: String) -> Result<HashMap<String, u32>> {
+        let meta = self.perp_dex_meta(perp_dex.clone()).await?;
+
+        let perp_dex_index = self
+            .perp_dexs()
+            .await?
+            .perp_dexs()
+            .iter()
+            .position(|p| p.name == perp_dex)
+            .unwrap();
+
+        let coin_to_asset = HashMap::new();
+        Ok(meta.add_perp_to_asset_map(perp_dex_index + 1, coin_to_asset))
     }
 
     pub async fn user_state(

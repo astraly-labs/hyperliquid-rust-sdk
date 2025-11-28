@@ -2,8 +2,8 @@ use crate::signature::sign_typed_data;
 use crate::{
     exchange::{
         actions::{
-            ApproveAgent, ApproveBuilderFee, BulkCancel, BulkModify, BulkOrder, SendAsset,
-            SetReferrer, UpdateIsolatedMargin, UpdateLeverage, UsdSend,
+            ApproveAgent, ApproveBuilderFee, BulkCancel, BulkModify, BulkOrder,
+            ReserveRequestWeight, SetReferrer, UpdateIsolatedMargin, UpdateLeverage, UsdSend,
         },
         cancel::{CancelRequest, CancelRequestCloid},
         modify::{ClientModifyRequest, ModifyRequest},
@@ -69,11 +69,17 @@ pub enum Actions {
     SpotSend(SpotSend),
     SetReferrer(SetReferrer),
     ApproveBuilderFee(ApproveBuilderFee),
-    SendAsset(SendAsset),
+    ReserveRequestWeight(ReserveRequestWeight),
+    Noop,
 }
 
 impl Actions {
-    fn hash(&self, timestamp: u64, vault_address: Option<H160>, expires_after: Option<u64>) -> Result<H256> {
+    fn hash(
+        &self,
+        timestamp: u64,
+        vault_address: Option<H160>,
+        expires_after: Option<u64>,
+    ) -> Result<H256> {
         let mut bytes =
             rmp_serde::to_vec_named(self).map_err(|e| Error::RmpParse(e.to_string()))?;
         bytes.extend(timestamp.to_be_bytes());
@@ -434,7 +440,6 @@ impl ExchangeClient {
         let mut transformed_orders = Vec::new();
 
         for mut order in orders {
-
             let asset_meta = self
                 .meta
                 .universe
@@ -443,7 +448,10 @@ impl ExchangeClient {
                 .ok_or(Error::AssetNotFound)?;
 
             let sz_decimals = asset_meta.sz_decimals;
-            let asset_id = self.coin_to_asset.get(&order.asset).ok_or(Error::AssetNotFound)?;
+            let asset_id = self
+                .coin_to_asset
+                .get(&order.asset)
+                .ok_or(Error::AssetNotFound)?;
             let max_decimals: u32 = if asset_id < &10000 { 6 } else { 8 };
             let price_decimals = max_decimals.saturating_sub(sz_decimals);
 
@@ -481,7 +489,6 @@ impl ExchangeClient {
         let mut transformed_orders = Vec::new();
 
         for mut order in orders {
-
             let asset_meta = self
                 .meta
                 .universe
@@ -490,7 +497,10 @@ impl ExchangeClient {
                 .ok_or(Error::AssetNotFound)?;
 
             let sz_decimals = asset_meta.sz_decimals;
-            let asset_id = self.coin_to_asset.get(&order.asset).ok_or(Error::AssetNotFound)?;
+            let asset_id = self
+                .coin_to_asset
+                .get(&order.asset)
+                .ok_or(Error::AssetNotFound)?;
             let max_decimals: u32 = if asset_id < &10000 { 6 } else { 8 };
             let price_decimals = max_decimals.saturating_sub(sz_decimals);
 
@@ -819,39 +829,21 @@ impl ExchangeClient {
         self.post(action, signature, timestamp, None).await
     }
 
-    pub async fn send_asset(
+    pub async fn reserve_request_weight(
         &self,
-        destination: &str,
-        source_dex: &str,
-        destination_dex: &str,
-        token: &str,
-        amount: &str,
-        from_sub_account: &str,
+        weight: u64,
         wallet: Option<&LocalWallet>,
     ) -> Result<ExchangeResponseStatus> {
         let wallet = wallet.unwrap_or(&self.wallet);
-        let hyperliquid_chain = if self.http_client.is_mainnet() {
-            "Mainnet".to_string()
-        } else {
-            "Testnet".to_string()
-        };
-
         let timestamp = next_nonce();
-        let send_asset = SendAsset {
-            signature_chain_id: 421614.into(),
-            hyperliquid_chain,
-            destination: destination.to_string(),
-            source_dex: source_dex.to_string(),
-            destination_dex: destination_dex.to_string(),
-            token: token.to_string(),
-            amount: amount.to_string(),
-            from_sub_account: from_sub_account.to_string(),
-            nonce: timestamp,
-        };
-        let signature = sign_typed_data(&send_asset, wallet)?;
-        let action = serde_json::to_value(Actions::SendAsset(send_asset))
-            .map_err(|e| Error::JsonParse(e.to_string()))?;
 
+        let action = Actions::ReserveRequestWeight(ReserveRequestWeight { weight });
+
+        let connection_id = action.hash(timestamp, self.vault_address, None)?;
+        let action = serde_json::to_value(&action).map_err(|e| Error::JsonParse(e.to_string()))?;
+
+        let is_mainnet = self.http_client.is_mainnet();
+        let signature = sign_l1_action(wallet, connection_id, is_mainnet)?;
         self.post(action, signature, timestamp, None).await
     }
 }
@@ -879,9 +871,7 @@ pub fn modify_order_payload(
 ) -> Result<ExchangePayload> {
     let nonce = next_nonce();
 
-    let mut transformed_orders = Vec::new();
-
-    transformed_orders.push(params.order.convert(coin_to_id)?);
+    let transformed_orders = [params.order.convert(coin_to_id)?];
 
     let action = Actions::BatchModify(BulkModify {
         modifies: vec![ModifyRequest {
@@ -913,9 +903,7 @@ pub fn order_payload(
 ) -> Result<ExchangePayload> {
     let nonce = next_nonce();
 
-    let mut transformed_orders = Vec::new();
-
-    transformed_orders.push(order.convert(&coin_to_id)?);
+    let transformed_orders = vec![order.convert(coin_to_id)?];
 
     let action = Actions::Order(BulkOrder {
         orders: transformed_orders,
@@ -959,7 +947,7 @@ pub fn bulk_order_payload(
         order.limit_px = round_to_significant_and_decimal(order.limit_px, 5, price_decimals);
         order.sz = round_to_decimals(order.sz, sz_decimals);
 
-        transformed_orders.push(order.convert(&coin_to_id)?);
+        transformed_orders.push(order.convert(coin_to_id)?);
     }
 
     let action = Actions::Order(BulkOrder {
@@ -1005,7 +993,7 @@ pub fn bulk_order_with_builder_payload(
         order.limit_px = round_to_significant_and_decimal(order.limit_px, 5, price_decimals);
         order.sz = round_to_decimals(order.sz, sz_decimals);
 
-        transformed_orders.push(order.convert(&coin_to_id)?);
+        transformed_orders.push(order.convert(coin_to_id)?);
     }
 
     let action = Actions::Order(BulkOrder {
@@ -1063,7 +1051,7 @@ pub fn cancel_order_payload(
 pub fn bulk_cancel_payload(
     vault_address: Option<H160>,
     wallet: &LocalWallet,
-    cancels: Vec<ClientCancelRequestCloid>,
+    cancels: Vec<ClientCancelRequest>,
     coin_to_id: &HashMap<String, u32>,
     is_mainnet: bool,
 ) -> Result<ExchangePayload> {
@@ -1072,13 +1060,13 @@ pub fn bulk_cancel_payload(
     let mut transformed_cancels = Vec::new();
     for cancel in cancels {
         let &asset = coin_to_id.get(&cancel.asset).ok_or(Error::AssetNotFound)?;
-        transformed_cancels.push(CancelRequestCloid {
+        transformed_cancels.push(CancelRequest {
             asset,
-            cloid: cancel.cloid.to_string(),
+            oid: cancel.oid,
         });
     }
 
-    let action = Actions::CancelByCloid(BulkCancelCloid {
+    let action = Actions::Cancel(BulkCancel {
         cancels: transformed_cancels,
     });
     let connection_id = action.hash(nonce, vault_address, None)?;
@@ -1220,7 +1208,7 @@ pub fn market_open_payload(
     let mut transformed_orders = Vec::new();
 
     for order in orders {
-        transformed_orders.push(order.convert(&coin_to_id)?);
+        transformed_orders.push(order.convert(coin_to_id)?);
     }
 
     let action = Actions::Order(BulkOrder {
@@ -1288,7 +1276,7 @@ pub fn limit_open_payload(
     let mut transformed_orders = Vec::new();
 
     for order in orders {
-        transformed_orders.push(order.convert(&coin_to_id)?);
+        transformed_orders.push(order.convert(coin_to_id)?);
     }
 
     let action = Actions::Order(BulkOrder {
@@ -1329,7 +1317,7 @@ pub fn set_leverage_payload(
 
     let connection_id = action.hash(nonce, vault_address, None)?;
     let action = serde_json::to_value(&action).map_err(|e| Error::JsonParse(e.to_string()))?;
-    let signature = sign_l1_action(&wallet, connection_id, is_mainnet)?;
+    let signature = sign_l1_action(wallet, connection_id, is_mainnet)?;
 
     Ok(ExchangePayload {
         action,
@@ -1337,6 +1325,29 @@ pub fn set_leverage_payload(
         nonce,
         vault_address,
         expires_after: None,
+    })
+}
+
+pub fn noop_payload(
+    vault_address: Option<H160>,
+    wallet: &LocalWallet,
+    is_mainnet: bool,
+    expires_after: Option<u64>,
+    nonce: Option<u64>,
+) -> Result<ExchangePayload> {
+    let nonce = nonce.unwrap_or_else(next_nonce);
+
+    let action = Actions::Noop;
+    let connection_id = action.hash(nonce, vault_address, expires_after)?;
+    let action = serde_json::to_value(&action).map_err(|e| Error::JsonParse(e.to_string()))?;
+    let signature = sign_l1_action(wallet, connection_id, is_mainnet)?;
+
+    Ok(ExchangePayload {
+        action,
+        signature,
+        nonce,
+        vault_address,
+        expires_after,
     })
 }
 

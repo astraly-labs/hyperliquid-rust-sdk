@@ -12,6 +12,11 @@ pub struct L2Book {
 }
 
 #[derive(Deserialize, Clone, Debug)]
+pub struct Bbo {
+    pub data: BboData,
+}
+
+#[derive(Deserialize, Clone, Debug)]
 pub struct AllMids {
     pub data: AllMidsData,
 }
