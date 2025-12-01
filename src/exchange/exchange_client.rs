@@ -44,11 +44,11 @@ pub struct ExchangeClient {
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct ExchangePayload {
-    action: serde_json::Value,
-    signature: Signature,
-    nonce: u64,
-    vault_address: Option<H160>,
-    expires_after: Option<u64>,
+    pub action: serde_json::Value,
+    pub signature: Signature,
+    pub nonce: u64,
+    pub vault_address: Option<H160>,
+    pub expires_after: Option<u64>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -74,7 +74,7 @@ pub enum Actions {
 }
 
 impl Actions {
-    fn hash(
+    pub fn hash(
         &self,
         timestamp: u64,
         vault_address: Option<H160>,

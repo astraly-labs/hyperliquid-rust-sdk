@@ -6,7 +6,7 @@ use ethers::{
 
 use crate::{prelude::*, proxy_digest::Sha256Proxy, signature::agent::l1, Error};
 
-pub(crate) fn sign_l1_action(
+pub fn sign_l1_action(
     wallet: &LocalWallet,
     connection_id: H256,
     is_mainnet: bool,
@@ -21,7 +21,7 @@ pub(crate) fn sign_l1_action(
     )
 }
 
-pub(crate) fn sign_typed_data<T: Eip712>(payload: &T, wallet: &LocalWallet) -> Result<Signature> {
+pub fn sign_typed_data<T: Eip712>(payload: &T, wallet: &LocalWallet) -> Result<Signature> {
     let encoded = payload
         .encode_eip712()
         .map_err(|e| Error::Eip712(e.to_string()))?;
