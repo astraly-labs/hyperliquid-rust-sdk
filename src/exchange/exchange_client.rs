@@ -70,6 +70,7 @@ pub enum Actions {
     SetReferrer(SetReferrer),
     ApproveBuilderFee(ApproveBuilderFee),
     ReserveRequestWeight(ReserveRequestWeight),
+    #[serde(rename = "noop")]
     Noop,
 }
 
@@ -102,6 +103,7 @@ impl ExchangeClient {
         client: Option<Client>,
         wallet: LocalWallet,
         base_url: Option<BaseUrl>,
+        perp_dex: Option<String>,
         meta: Option<Meta>,
         vault_address: Option<H160>,
     ) -> Result<ExchangeClient> {
@@ -112,12 +114,25 @@ impl ExchangeClient {
         let meta = if let Some(meta) = meta {
             meta
         } else {
-            info.meta(None).await?
+            info.meta(perp_dex.clone()).await?
+        };
+
+        let perp_dex_index = if let Some(name) = perp_dex {
+            info.perp_dexs()
+                .await?
+                .perp_dexs()
+                .iter()
+                .position(|p| p.name == name)
+                .expect("")
+                + 1
+        } else {
+            0
         };
 
         let mut coin_to_asset = HashMap::new();
         for (asset_ind, asset) in meta.universe.iter().enumerate() {
-            coin_to_asset.insert(asset.name.clone(), asset_ind as u32);
+            let asset_id: u32 = 100000 + (perp_dex_index as u32 * 10000) + asset_ind as u32;
+            coin_to_asset.insert(asset.name.clone(), asset_id);
         }
 
         coin_to_asset = info
@@ -530,6 +545,24 @@ impl ExchangeClient {
         wallet: Option<&LocalWallet>,
     ) -> Result<ExchangeResponseStatus> {
         self.bulk_cancel(vec![cancel], wallet).await
+    }
+
+    pub async fn bulk_raw_cancel(
+        &self,
+        cancels: Vec<CancelRequest>,
+        wallet: Option<&LocalWallet>,
+    ) -> Result<ExchangeResponseStatus> {
+        let wallet = wallet.unwrap_or(&self.wallet);
+        let timestamp = next_nonce();
+
+        let action = Actions::Cancel(BulkCancel { cancels });
+        let connection_id = action.hash(timestamp, self.vault_address, None)?;
+
+        let action = serde_json::to_value(&action).map_err(|e| Error::JsonParse(e.to_string()))?;
+        let is_mainnet = self.http_client.is_mainnet();
+        let signature = sign_l1_action(wallet, connection_id, is_mainnet)?;
+
+        self.post(action, signature, timestamp, None).await
     }
 
     pub async fn bulk_cancel(
