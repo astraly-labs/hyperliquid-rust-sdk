@@ -61,6 +61,7 @@ pub enum Actions {
     Order(BulkOrder),
     Cancel(BulkCancel),
     CancelByCloid(BulkCancelCloid),
+    Modify(ModifyRequest),
     BatchModify(BulkModify),
     ApproveAgent(ApproveAgent),
     Withdraw3(Withdraw3),
