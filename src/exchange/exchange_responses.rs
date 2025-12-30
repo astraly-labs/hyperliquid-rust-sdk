@@ -1,3 +1,4 @@
+use rust_decimal::Decimal;
 use serde::Deserialize;
 
 #[derive(Deserialize, Debug, Clone)]
@@ -8,8 +9,8 @@ pub struct RestingOrder {
 #[derive(Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct FilledOrder {
-    pub total_sz: String,
-    pub avg_px: String,
+    pub total_sz: Decimal,
+    pub avg_px: Decimal,
     pub oid: u64,
 }
 

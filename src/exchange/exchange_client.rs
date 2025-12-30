@@ -3,7 +3,8 @@ use crate::{
     exchange::{
         actions::{
             ApproveAgent, ApproveBuilderFee, BulkCancel, BulkModify, BulkOrder,
-            ReserveRequestWeight, SetReferrer, UpdateIsolatedMargin, UpdateLeverage, UsdSend,
+            ReserveRequestWeight, SetReferrer, TopUpIsolatedOnlyMargin, UpdateIsolatedMargin,
+            UpdateLeverage, UsdSend,
         },
         cancel::{CancelRequest, CancelRequestCloid},
         modify::{ClientModifyRequest, ModifyRequest},
@@ -58,10 +59,10 @@ pub enum Actions {
     UsdSend(UsdSend),
     UpdateLeverage(UpdateLeverage),
     UpdateIsolatedMargin(UpdateIsolatedMargin),
+    TopUpIsolatedOnlyMargin(TopUpIsolatedOnlyMargin),
     Order(BulkOrder),
     Cancel(BulkCancel),
     CancelByCloid(BulkCancelCloid),
-    Modify(ModifyRequest),
     BatchModify(BulkModify),
     ApproveAgent(ApproveAgent),
     Withdraw3(Withdraw3),
@@ -566,6 +567,24 @@ impl ExchangeClient {
         self.post(action, signature, timestamp, None).await
     }
 
+    pub async fn bulk_raw_cancel_by_cloid(
+        &self,
+        cancels: Vec<CancelRequestCloid>,
+        wallet: Option<&LocalWallet>,
+    ) -> Result<ExchangeResponseStatus> {
+        let wallet = wallet.unwrap_or(&self.wallet);
+        let timestamp = next_nonce();
+
+        let action = Actions::CancelByCloid(BulkCancelCloid { cancels });
+        let connection_id = action.hash(timestamp, self.vault_address, None)?;
+
+        let action = serde_json::to_value(&action).map_err(|e| Error::JsonParse(e.to_string()))?;
+        let is_mainnet = self.http_client.is_mainnet();
+        let signature = sign_l1_action(wallet, connection_id, is_mainnet)?;
+
+        self.post(action, signature, timestamp, None).await
+    }
+
     pub async fn bulk_cancel(
         &self,
         cancels: Vec<ClientCancelRequest>,
@@ -699,6 +718,7 @@ impl ExchangeClient {
         self.post(action, signature, timestamp, None).await
     }
 
+    /// Add or remove margin from an isolated position.
     pub async fn update_isolated_margin(
         &self,
         amount: f64,
@@ -715,6 +735,33 @@ impl ExchangeClient {
             asset: asset_index,
             is_buy: true,
             ntli: amount,
+        });
+        let connection_id = action.hash(timestamp, self.vault_address, None)?;
+        let action = serde_json::to_value(&action).map_err(|e| Error::JsonParse(e.to_string()))?;
+        let is_mainnet = self.http_client.is_mainnet();
+        let signature = sign_l1_action(wallet, connection_id, is_mainnet)?;
+
+        self.post(action, signature, timestamp, None).await
+    }
+
+    /// Top up isolated margin to target a specific leverage.
+    ///
+    /// This is an alternate way to adjust isolated margin by specifying a target leverage
+    /// instead of a specific USDC amount.
+    pub async fn top_up_isolated_margin(
+        &self,
+        leverage: f64,
+        coin: &str,
+        wallet: Option<&LocalWallet>,
+    ) -> Result<ExchangeResponseStatus> {
+        let wallet = wallet.unwrap_or(&self.wallet);
+
+        let timestamp = next_nonce();
+
+        let &asset_index = self.coin_to_asset.get(coin).ok_or(Error::AssetNotFound)?;
+        let action = Actions::TopUpIsolatedOnlyMargin(TopUpIsolatedOnlyMargin {
+            asset: asset_index,
+            leverage: leverage.to_string(),
         });
         let connection_id = action.hash(timestamp, self.vault_address, None)?;
         let action = serde_json::to_value(&action).map_err(|e| Error::JsonParse(e.to_string()))?;
@@ -1003,6 +1050,7 @@ pub fn bulk_order_payload(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn bulk_order_with_builder_payload(
     orders: Vec<ClientOrderRequest>,
     coin_to_id: &HashMap<String, u32>,
@@ -1197,6 +1245,7 @@ pub fn bulk_cancel_by_cloid_payload(
 /// * `reduce_only` - Whether the order is a reduce-only order
 /// * `sz_decimals` - The number of decimal places in the size of the order
 /// * `tif` - The time in force of the order (values possible: "Gtc", "Ioc", others?)
+#[allow(clippy::too_many_arguments)]
 pub fn market_open_payload(
     vault_address: Option<H160>,
     wallet: &LocalWallet,
@@ -1264,6 +1313,7 @@ pub fn market_open_payload(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn limit_open_payload(
     vault_address: Option<H160>,
     wallet: &LocalWallet,
@@ -1347,6 +1397,84 @@ pub fn set_leverage_payload(
         asset,
         is_cross,
         leverage,
+    });
+
+    let connection_id = action.hash(nonce, vault_address, None)?;
+    let action = serde_json::to_value(&action).map_err(|e| Error::JsonParse(e.to_string()))?;
+    let signature = sign_l1_action(wallet, connection_id, is_mainnet)?;
+
+    Ok(ExchangePayload {
+        action,
+        signature,
+        nonce,
+        vault_address,
+        expires_after: None,
+    })
+}
+
+/// Create a payload to add or remove margin from an isolated position.
+///
+/// # Arguments
+/// * `amount` - Amount in USD to add (positive) or remove (negative) from the position
+/// * `symbol` - The coin/asset symbol (e.g., "BTC", "ETH")
+/// * `wallet` - The wallet to sign with
+/// * `symbols_to_id` - A map of coin symbols to their corresponding asset IDs
+/// * `vault_address` - Optional vault address
+/// * `is_mainnet` - Whether this is for mainnet or testnet
+pub fn update_isolated_margin_payload(
+    amount: f64,
+    symbol: &str,
+    wallet: &LocalWallet,
+    symbols_to_id: &HashMap<String, u32>,
+    vault_address: Option<H160>,
+    is_mainnet: bool,
+) -> Result<ExchangePayload> {
+    let asset = *symbols_to_id.get(symbol).ok_or(Error::AssetNotFound)?;
+    let nonce = next_nonce();
+    let ntli = (amount * 1_000_000.0).round() as i64;
+
+    let action = Actions::UpdateIsolatedMargin(UpdateIsolatedMargin {
+        asset,
+        is_buy: true,
+        ntli,
+    });
+
+    let connection_id = action.hash(nonce, vault_address, None)?;
+    let action = serde_json::to_value(&action).map_err(|e| Error::JsonParse(e.to_string()))?;
+    let signature = sign_l1_action(wallet, connection_id, is_mainnet)?;
+
+    Ok(ExchangePayload {
+        action,
+        signature,
+        nonce,
+        vault_address,
+        expires_after: None,
+    })
+}
+
+/// Create a payload to top up isolated margin to target a specific leverage.
+///
+/// # Arguments
+/// * `leverage` - The target leverage as a float (e.g., 5.0 for 5x leverage)
+/// * `symbol` - The coin/asset symbol (e.g., "BTC", "ETH")
+/// * `wallet` - The wallet to sign with
+/// * `symbols_to_id` - A map of coin symbols to their corresponding asset IDs
+/// * `vault_address` - Optional vault address
+/// * `is_mainnet` - Whether this is for mainnet or testnet
+pub fn top_up_isolated_margin_payload(
+    leverage: f64,
+    symbol: &str,
+    wallet: &LocalWallet,
+    symbols_to_id: &HashMap<String, u32>,
+    vault_address: Option<H160>,
+    is_mainnet: bool,
+) -> Result<ExchangePayload> {
+    let asset = *symbols_to_id.get(symbol).ok_or(Error::AssetNotFound)?;
+    let nonce = next_nonce();
+
+    let action = Actions::TopUpIsolatedOnlyMargin(TopUpIsolatedOnlyMargin {
+        asset,
+        leverage: leverage.to_string(),
     });
 
     let connection_id = action.hash(nonce, vault_address, None)?;

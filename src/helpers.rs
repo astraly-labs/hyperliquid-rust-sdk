@@ -1,9 +1,11 @@
 use crate::{consts::*, prelude::*};
 use chrono::prelude::Utc;
-use lazy_static::lazy_static;
 use log::info;
 use rand::{rng, Rng};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    LazyLock,
+};
 use uuid::Uuid;
 
 fn now_timestamp_ms() -> u64 {
@@ -22,6 +24,12 @@ pub fn next_nonce() -> u64 {
         CUR_NONCE.fetch_max(now_ms, Ordering::Relaxed);
     }
     nonce
+}
+
+pub fn reset_nonce() -> u64 {
+    let new_nonce = now_timestamp_ms();
+    CUR_NONCE.fetch_max(new_nonce, Ordering::Relaxed);
+    new_nonce
 }
 
 pub(crate) const WIRE_DECIMALS: u8 = 8;
@@ -67,10 +75,12 @@ pub fn truncate_float(float: f64, decimals: u32, round_up: bool) -> f64 {
 }
 
 pub fn bps_diff(x: f64, y: f64) -> u16 {
+    const BPS_SCALE: f64 = 10_000.0;
+
     if x.abs() < EPSILON {
         INF_BPS
     } else {
-        (((y - x).abs() / (x)) * 10_000.0) as u16
+        (((y - x).abs() / (x)) * BPS_SCALE) as u16
     }
 }
 
@@ -91,9 +101,7 @@ impl BaseUrl {
     }
 }
 
-lazy_static! {
-    pub static ref CUR_NONCE: AtomicU64 = AtomicU64::new(now_timestamp_ms());
-}
+pub static CUR_NONCE: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(now_timestamp_ms()));
 
 #[cfg(test)]
 mod tests {

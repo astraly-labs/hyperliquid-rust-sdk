@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use ethers::abi::ethereum_types::H128;
+use rust_decimal::Decimal;
 use serde::Deserialize;
 
 #[derive(Deserialize, Debug, Clone)]
@@ -97,7 +98,7 @@ pub struct MarginTableData {
 #[derive(Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct MarginTier {
-    pub lower_bound: String,
+    pub lower_bound: Decimal,
     pub max_leverage: u32,
 }
 
@@ -155,6 +156,7 @@ impl PerpDexMeta {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rust_decimal_macros::dec;
 
     #[ignore = "incomplete JSON payload"]
     #[test]
@@ -261,7 +263,10 @@ mod tests {
         assert_eq!(meta.margin_tables[0].0, 50);
         assert_eq!(meta.margin_tables[0].1.description, "");
         assert_eq!(meta.margin_tables[0].1.margin_tiers.len(), 1);
-        assert_eq!(meta.margin_tables[0].1.margin_tiers[0].lower_bound, "0.0");
+        assert_eq!(
+            meta.margin_tables[0].1.margin_tiers[0].lower_bound,
+            Decimal::ZERO
+        );
         assert_eq!(meta.margin_tables[0].1.margin_tiers[0].max_leverage, 50);
 
         assert_eq!(meta.margin_tables[1].0, 51);
@@ -269,7 +274,7 @@ mod tests {
         assert_eq!(meta.margin_tables[1].1.margin_tiers.len(), 2);
         assert_eq!(
             meta.margin_tables[1].1.margin_tiers[1].lower_bound,
-            "3000000.0"
+            dec!(3000000.0)
         );
         assert_eq!(meta.margin_tables[1].1.margin_tiers[1].max_leverage, 5);
     }

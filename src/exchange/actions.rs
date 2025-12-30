@@ -96,6 +96,13 @@ pub struct UpdateIsolatedMargin {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
+pub struct TopUpIsolatedOnlyMargin {
+    pub asset: u32,
+    pub leverage: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct BulkOrder {
     pub orders: Vec<OrderRequest>,
     pub grouping: String,
