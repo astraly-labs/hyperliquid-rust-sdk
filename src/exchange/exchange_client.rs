@@ -35,6 +35,7 @@ use super::{BuilderInfo, ClientLimit, ClientOrder};
 
 #[derive(Debug)]
 pub struct ExchangeClient {
+    pub dex: Option<String>,
     pub http_client: HttpClient,
     pub wallet: LocalWallet,
     pub meta: Meta,
@@ -109,22 +110,21 @@ impl ExchangeClient {
         meta: Option<Meta>,
         vault_address: Option<H160>,
     ) -> Result<ExchangeClient> {
-        let client = client.unwrap_or_default();
         let base_url = base_url.unwrap_or(BaseUrl::Mainnet);
 
-        let info = InfoClient::new(None, Some(base_url)).await?;
+        let info = InfoClient::new(client.clone(), Some(base_url)).await?;
         let meta = if let Some(meta) = meta {
             meta
         } else {
             info.meta(perp_dex.clone()).await?
         };
 
-        let perp_dex_index = if let Some(name) = perp_dex {
+        let perp_dex_index = if let Some(name) = &perp_dex {
             info.perp_dexs()
                 .await?
                 .perp_dexs()
                 .iter()
-                .position(|p| p.name == name)
+                .position(|p| &p.name == name)
                 .expect("")
                 + 1
         } else {
@@ -137,17 +137,21 @@ impl ExchangeClient {
             coin_to_asset.insert(asset.name.clone(), asset_id);
         }
 
-        coin_to_asset = info
-            .spot_meta()
-            .await?
-            .add_pair_and_name_to_index_map(coin_to_asset);
+        // Add spot info for Hyperliquid main dex
+        if perp_dex.is_none() {
+            coin_to_asset = info
+                .spot_meta()
+                .await?
+                .add_pair_and_name_to_index_map(coin_to_asset);
+        }
 
         Ok(ExchangeClient {
+            dex: perp_dex,
             wallet,
             meta,
             vault_address,
             http_client: HttpClient {
-                client,
+                client: client.unwrap_or_default(),
                 base_url: base_url.get_url(),
             },
             coin_to_asset,
@@ -386,9 +390,9 @@ impl ExchangeClient {
             _ => return Err(Error::GenericRequest("Invalid base URL".to_string())),
         };
         let info_client = InfoClient::new(None, Some(base_url)).await?;
-        let meta = info_client.meta(None).await?;
 
-        let asset_meta = meta
+        let asset_meta = self
+            .meta
             .universe
             .iter()
             .find(|a| a.name == asset)
@@ -405,7 +409,7 @@ impl ExchangeClient {
         let px = if let Some(px) = px {
             px
         } else {
-            let all_mids = info_client.all_mids().await?;
+            let all_mids = info_client.all_mids(self.dex.clone()).await?;
             all_mids
                 .get(asset)
                 .ok_or(Error::AssetNotFound)?
@@ -1050,7 +1054,6 @@ pub fn bulk_order_payload(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn bulk_order_with_builder_payload(
     orders: Vec<ClientOrderRequest>,
     coin_to_id: &HashMap<String, u32>,
@@ -1245,7 +1248,6 @@ pub fn bulk_cancel_by_cloid_payload(
 /// * `reduce_only` - Whether the order is a reduce-only order
 /// * `sz_decimals` - The number of decimal places in the size of the order
 /// * `tif` - The time in force of the order (values possible: "Gtc", "Ioc", others?)
-#[allow(clippy::too_many_arguments)]
 pub fn market_open_payload(
     vault_address: Option<H160>,
     wallet: &LocalWallet,
@@ -1313,7 +1315,6 @@ pub fn market_open_payload(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn limit_open_payload(
     vault_address: Option<H160>,
     wallet: &LocalWallet,

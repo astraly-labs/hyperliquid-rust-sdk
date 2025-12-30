@@ -64,7 +64,10 @@ pub enum InfoRequest {
     },
     SpotMeta,
     SpotMetaAndAssetCtxs,
-    AllMids,
+    AllMids {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        dex: Option<String>,
+    },
     UserFills {
         user: H160,
     },
@@ -208,8 +211,8 @@ impl InfoClient {
         self.send_info_request(input).await
     }
 
-    pub async fn all_mids(&self) -> Result<HashMap<String, String>> {
-        let input = InfoRequest::AllMids;
+    pub async fn all_mids(&self, dex: Option<String>) -> Result<HashMap<String, String>> {
+        let input = InfoRequest::AllMids { dex };
         self.send_info_request(input).await
     }
 
