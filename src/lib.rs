@@ -20,4 +20,5 @@ pub use meta::*;
 pub use signature::*;
 pub use ws::*;
 
+pub use ethers::signers::{LocalWallet, Signer};
 pub use ethers::types::H160;

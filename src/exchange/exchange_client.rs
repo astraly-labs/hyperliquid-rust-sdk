@@ -43,6 +43,14 @@ pub struct ExchangeClient {
     pub coin_to_asset: HashMap<String, u32>,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct GossipPriorityBid {
+    pub slot_id: u8,
+    pub ip: String,
+    pub max_gas: u64,
+}
+
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct ExchangePayload {
@@ -73,6 +81,7 @@ pub enum Actions {
     SetReferrer(SetReferrer),
     ApproveBuilderFee(ApproveBuilderFee),
     ReserveRequestWeight(ReserveRequestWeight),
+    GossipPriorityBid(GossipPriorityBid),
     #[serde(rename = "noop")]
     Noop,
 }
@@ -1652,6 +1661,36 @@ mod tests {
 
         let signature = sign_l1_action(&wallet, connection_id, false)?;
         assert_eq!(signature.to_string(), "6ffebadfd48067663390962539fbde76cfa36f53be65abe2ab72c9db6d0db44457720db9d7c4860f142a484f070c84eb4b9694c3a617c83f0d698a27e55fd5e01c");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_gossip_priority_bid_action_hashing() -> Result<()> {
+        let wallet = get_wallet()?;
+        let action = Actions::GossipPriorityBid(GossipPriorityBid {
+            slot_id: 0,
+            ip: "127.0.0.1".to_string(),
+            max_gas: 100_000_000,
+        });
+        let connection_id = action.hash(1583838, None, None)?;
+
+        // Snapshot: any drift in rmp_serde field ordering, hash tail layout,
+        // or EIP-712 domain trips this test. Update only after verifying the
+        // new value against an independent reference.
+        let signature = sign_l1_action(&wallet, connection_id, true)?;
+        assert_eq!(signature.to_string(), "255aa596d4689ec6f139636364c53c319700ee884a997fc0a58698c79d32119c2641262047ded83b58e550ca206a732e1da57303209f0fcb6c6c6652047619cf1c");
+
+        // Wire-shape lock: camelCase tag + camelCase fields.
+        let action_json = serde_json::to_value(&action)
+            .map_err(|e| Error::JsonParse(e.to_string()))?;
+        let expected_json = serde_json::json!({
+            "type": "gossipPriorityBid",
+            "slotId": 0,
+            "ip": "127.0.0.1",
+            "maxGas": 100_000_000u64,
+        });
+        assert_eq!(action_json, expected_json);
 
         Ok(())
     }
