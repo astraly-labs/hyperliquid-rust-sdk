@@ -2,7 +2,7 @@ use crate::signature::sign_typed_data;
 use crate::{
     exchange::{
         actions::{
-            ApproveAgent, ApproveBuilderFee, BulkCancel, BulkModify, BulkOrder,
+            ApproveAgent, ApproveBuilderFee, BulkCancel, BulkModify, BulkOrder, OrderGrouping,
             ReserveRequestWeight, SetReferrer, TopUpIsolatedOnlyMargin, UpdateIsolatedMargin,
             UpdateLeverage, UsdSend,
         },
@@ -30,7 +30,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 use super::cancel::ClientCancelRequestCloid;
-use super::order::{MarketCloseParams, MarketOrderParams};
+use super::order::{MarketCloseParams, MarketOrderParams, OrderRequest};
 use super::{BuilderInfo, ClientLimit, ClientOrder};
 
 #[derive(Debug)]
@@ -459,42 +459,45 @@ impl ExchangeClient {
             .await
     }
 
+    /// Send a single order with an explicit [`OrderGrouping`].
+    ///
+    /// Pass [`OrderGrouping::PriorityRate`] to tip for faster matching. All orders
+    /// must be IOC when using `PriorityRate` — the server will reject the batch
+    /// otherwise. See <https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/priority-fees>.
+    pub async fn order_with_grouping(
+        &self,
+        order: ClientOrderRequest,
+        grouping: OrderGrouping,
+        wallet: Option<&LocalWallet>,
+    ) -> Result<ExchangeResponseStatus> {
+        self.bulk_order_with_grouping(vec![order], grouping, wallet)
+            .await
+    }
+
     pub async fn bulk_order(
         &self,
         orders: Vec<ClientOrderRequest>,
         wallet: Option<&LocalWallet>,
     ) -> Result<ExchangeResponseStatus> {
+        self.bulk_order_with_grouping(orders, OrderGrouping::Na, wallet)
+            .await
+    }
+
+    /// Send a batch of orders with an explicit [`OrderGrouping`].
+    pub async fn bulk_order_with_grouping(
+        &self,
+        orders: Vec<ClientOrderRequest>,
+        grouping: OrderGrouping,
+        wallet: Option<&LocalWallet>,
+    ) -> Result<ExchangeResponseStatus> {
         let wallet = wallet.unwrap_or(&self.wallet);
         let timestamp = next_nonce();
 
-        let mut transformed_orders = Vec::new();
-
-        for mut order in orders {
-            let asset_meta = self
-                .meta
-                .universe
-                .iter()
-                .find(|a| a.name == order.asset)
-                .ok_or(Error::AssetNotFound)?;
-
-            let sz_decimals = asset_meta.sz_decimals;
-            let asset_id = self
-                .coin_to_asset
-                .get(&order.asset)
-                .ok_or(Error::AssetNotFound)?;
-            let max_decimals: u32 = if asset_id < &10000 { 6 } else { 8 };
-            let price_decimals = max_decimals.saturating_sub(sz_decimals);
-
-            order.limit_px = round_to_significant_and_decimal(order.limit_px, 5, price_decimals);
-
-            order.sz = round_to_decimals(order.sz, sz_decimals);
-
-            transformed_orders.push(order.convert(&self.coin_to_asset)?);
-        }
+        let transformed_orders = self.transform_client_orders(orders)?;
 
         let action = Actions::Order(BulkOrder {
             orders: transformed_orders,
-            grouping: "na".to_string(),
+            grouping,
             builder: None,
         });
         let connection_id = action.hash(timestamp, self.vault_address, None)?;
@@ -509,15 +512,45 @@ impl ExchangeClient {
         &self,
         orders: Vec<ClientOrderRequest>,
         wallet: Option<&LocalWallet>,
+        builder: BuilderInfo,
+    ) -> Result<ExchangeResponseStatus> {
+        self.bulk_order_with_grouping_and_builder(orders, OrderGrouping::Na, builder, wallet)
+            .await
+    }
+
+    /// Send a batch of orders with an explicit [`OrderGrouping`] and builder info.
+    pub async fn bulk_order_with_grouping_and_builder(
+        &self,
+        orders: Vec<ClientOrderRequest>,
+        grouping: OrderGrouping,
         mut builder: BuilderInfo,
+        wallet: Option<&LocalWallet>,
     ) -> Result<ExchangeResponseStatus> {
         let wallet = wallet.unwrap_or(&self.wallet);
         let timestamp = next_nonce();
 
         builder.builder = builder.builder.to_lowercase();
 
-        let mut transformed_orders = Vec::new();
+        let transformed_orders = self.transform_client_orders(orders)?;
 
+        let action = Actions::Order(BulkOrder {
+            orders: transformed_orders,
+            grouping,
+            builder: Some(builder),
+        });
+        let connection_id = action.hash(timestamp, self.vault_address, None)?;
+        let action = serde_json::to_value(&action).map_err(|e| Error::JsonParse(e.to_string()))?;
+
+        let is_mainnet = self.http_client.is_mainnet();
+        let signature = sign_l1_action(wallet, connection_id, is_mainnet)?;
+        self.post(action, signature, timestamp, None).await
+    }
+
+    fn transform_client_orders(
+        &self,
+        orders: Vec<ClientOrderRequest>,
+    ) -> Result<Vec<OrderRequest>> {
+        let mut transformed_orders = Vec::with_capacity(orders.len());
         for mut order in orders {
             let asset_meta = self
                 .meta
@@ -535,23 +568,11 @@ impl ExchangeClient {
             let price_decimals = max_decimals.saturating_sub(sz_decimals);
 
             order.limit_px = round_to_significant_and_decimal(order.limit_px, 5, price_decimals);
-
             order.sz = round_to_decimals(order.sz, sz_decimals);
 
             transformed_orders.push(order.convert(&self.coin_to_asset)?);
         }
-
-        let action = Actions::Order(BulkOrder {
-            orders: transformed_orders,
-            grouping: "na".to_string(),
-            builder: Some(builder),
-        });
-        let connection_id = action.hash(timestamp, self.vault_address, None)?;
-        let action = serde_json::to_value(&action).map_err(|e| Error::JsonParse(e.to_string()))?;
-
-        let is_mainnet = self.http_client.is_mainnet();
-        let signature = sign_l1_action(wallet, connection_id, is_mainnet)?;
-        self.post(action, signature, timestamp, None).await
+        Ok(transformed_orders)
     }
 
     pub async fn cancel(
@@ -1001,7 +1022,7 @@ pub fn order_payload(
 
     let action = Actions::Order(BulkOrder {
         orders: transformed_orders,
-        grouping: "na".to_string(),
+        grouping: OrderGrouping::Na,
         builder: None,
     });
     let connection_id = action.hash(nonce, vault_address, expires_after)?;
@@ -1046,7 +1067,7 @@ pub fn bulk_order_payload(
 
     let action = Actions::Order(BulkOrder {
         orders: transformed_orders,
-        grouping: "na".to_string(),
+        grouping: OrderGrouping::Na,
         builder: None,
     });
     let connection_id = action.hash(nonce, vault_address, expires_after)?;
@@ -1092,7 +1113,7 @@ pub fn bulk_order_with_builder_payload(
 
     let action = Actions::Order(BulkOrder {
         orders: transformed_orders,
-        grouping: "na".to_string(),
+        grouping: OrderGrouping::Na,
         builder: Some(builder),
     });
     let connection_id = action.hash(nonce, vault_address, expires_after)?;
@@ -1307,7 +1328,7 @@ pub fn market_open_payload(
 
     let action = Actions::Order(BulkOrder {
         orders: transformed_orders,
-        grouping: "na".to_string(),
+        grouping: OrderGrouping::Na,
         builder: None,
     });
     let connection_id = action.hash(nonce, vault_address, params.expires_after)?;
@@ -1375,7 +1396,7 @@ pub fn limit_open_payload(
 
     let action = Actions::Order(BulkOrder {
         orders: transformed_orders,
-        grouping: "na".to_string(),
+        grouping: OrderGrouping::Na,
         builder: None,
     });
     let connection_id = action.hash(nonce, vault_address, params.expires_after)?;
@@ -1555,7 +1576,7 @@ mod tests {
                 }),
                 cloid: None,
             }],
-            grouping: "na".to_string(),
+            grouping: OrderGrouping::Na,
             builder: None,
         });
         let connection_id = action.hash(1583838, None, None)?;
@@ -1586,7 +1607,7 @@ mod tests {
                 }),
                 cloid: Some(uuid_to_hex_string(cloid.unwrap())),
             }],
-            grouping: "na".to_string(),
+            grouping: OrderGrouping::Na,
             builder: None,
         });
         let connection_id = action.hash(1583838, None, None)?;
@@ -1631,7 +1652,7 @@ mod tests {
                         cloid: None,
                     }
                 ],
-                grouping: "na".to_string(),
+                grouping: OrderGrouping::Na,
                 builder: None,
             });
             let connection_id = action.hash(1583838, None, None)?;
@@ -1682,8 +1703,8 @@ mod tests {
         assert_eq!(signature.to_string(), "255aa596d4689ec6f139636364c53c319700ee884a997fc0a58698c79d32119c2641262047ded83b58e550ca206a732e1da57303209f0fcb6c6c6652047619cf1c");
 
         // Wire-shape lock: camelCase tag + camelCase fields.
-        let action_json = serde_json::to_value(&action)
-            .map_err(|e| Error::JsonParse(e.to_string()))?;
+        let action_json =
+            serde_json::to_value(&action).map_err(|e| Error::JsonParse(e.to_string()))?;
         let expected_json = serde_json::json!({
             "type": "gossipPriorityBid",
             "slotId": 0,

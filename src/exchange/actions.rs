@@ -10,7 +10,8 @@ pub(crate) use ethers::{
     },
     utils::keccak256,
 };
-use serde::{Deserialize, Serialize};
+use serde::ser::SerializeMap;
+use serde::{de::Error as _, Deserialize, Deserializer, Serialize, Serializer};
 
 use super::{cancel::CancelRequestCloid, BuilderInfo};
 
@@ -105,9 +106,71 @@ pub struct TopUpIsolatedOnlyMargin {
 #[serde(rename_all = "camelCase")]
 pub struct BulkOrder {
     pub orders: Vec<OrderRequest>,
-    pub grouping: String,
+    #[serde(default)]
+    pub grouping: OrderGrouping,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub builder: Option<BuilderInfo>,
+}
+
+/// Grouping type for batch orders.
+///
+/// Serializes as a plain string (`"na"`, `"normalTpsl"`, `"positionTpsl"`) or as an
+/// object with a priority rate: `{"p": N}` where N is in units of 1/10_000_000 of
+/// filled notional (max 8 bps → `80_000`). When using [`OrderGrouping::PriorityRate`]
+/// all orders in the batch must be IOC.
+///
+/// See <https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/priority-fees#order-write-priority>.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum OrderGrouping {
+    Na,
+    NormalTpsl,
+    PositionTpsl,
+    /// Pay a priority tip burned at fill time for faster matching.
+    /// Units are 1/10_000_000 of filled notional; max `80_000` (8 bps).
+    PriorityRate(u32),
+}
+
+impl Default for OrderGrouping {
+    fn default() -> Self {
+        Self::Na
+    }
+}
+
+impl Serialize for OrderGrouping {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::Na => s.serialize_str("na"),
+            Self::NormalTpsl => s.serialize_str("normalTpsl"),
+            Self::PositionTpsl => s.serialize_str("positionTpsl"),
+            Self::PriorityRate(p) => {
+                let mut map = s.serialize_map(Some(1))?;
+                map.serialize_entry("p", p)?;
+                map.end()
+            }
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for OrderGrouping {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Raw {
+            Str(String),
+            Obj { p: u32 },
+        }
+        match Raw::deserialize(d)? {
+            Raw::Str(s) => match s.as_str() {
+                "na" => Ok(Self::Na),
+                "normalTpsl" => Ok(Self::NormalTpsl),
+                "positionTpsl" => Ok(Self::PositionTpsl),
+                other => Err(D::Error::custom(format!(
+                    "unknown grouping variant: {other}"
+                ))),
+            },
+            Raw::Obj { p } => Ok(Self::PriorityRate(p)),
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -317,4 +380,96 @@ pub struct ApproveBuilderFee {
 #[serde(rename_all = "camelCase")]
 pub struct ReserveRequestWeight {
     pub weight: u64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::exchange::order::{Limit, OrderRequest};
+
+    #[test]
+    fn order_grouping_na_serialize() {
+        assert_eq!(
+            serde_json::to_string(&OrderGrouping::Na).unwrap(),
+            r#""na""#
+        );
+    }
+
+    #[test]
+    fn order_grouping_normal_tpsl_serialize() {
+        assert_eq!(
+            serde_json::to_string(&OrderGrouping::NormalTpsl).unwrap(),
+            r#""normalTpsl""#
+        );
+    }
+
+    #[test]
+    fn order_grouping_position_tpsl_serialize() {
+        assert_eq!(
+            serde_json::to_string(&OrderGrouping::PositionTpsl).unwrap(),
+            r#""positionTpsl""#
+        );
+    }
+
+    #[test]
+    fn order_grouping_priority_rate_serialize() {
+        let json = serde_json::to_string(&OrderGrouping::PriorityRate(80_000)).unwrap();
+        assert_eq!(json, r#"{"p":80000}"#);
+    }
+
+    #[test]
+    fn order_grouping_deserialize_all_variants() {
+        assert!(matches!(
+            serde_json::from_str::<OrderGrouping>(r#""na""#).unwrap(),
+            OrderGrouping::Na
+        ));
+        assert!(matches!(
+            serde_json::from_str::<OrderGrouping>(r#""normalTpsl""#).unwrap(),
+            OrderGrouping::NormalTpsl
+        ));
+        assert!(matches!(
+            serde_json::from_str::<OrderGrouping>(r#""positionTpsl""#).unwrap(),
+            OrderGrouping::PositionTpsl
+        ));
+        assert!(matches!(
+            serde_json::from_str::<OrderGrouping>(r#"{"p":80000}"#).unwrap(),
+            OrderGrouping::PriorityRate(80_000)
+        ));
+    }
+
+    #[test]
+    fn order_grouping_deserialize_unknown_string_errors() {
+        assert!(serde_json::from_str::<OrderGrouping>(r#""bogus""#).is_err());
+    }
+
+    #[test]
+    fn batch_order_with_priority_rate_roundtrip() {
+        let batch = BulkOrder {
+            orders: vec![OrderRequest {
+                asset: 0,
+                is_buy: true,
+                limit_px: "50000".to_string(),
+                sz: "0.1".to_string(),
+                reduce_only: false,
+                order_type: crate::exchange::order::Order::Limit(Limit {
+                    tif: "Ioc".to_string(),
+                }),
+                cloid: None,
+            }],
+            grouping: OrderGrouping::PriorityRate(80_000),
+            builder: None,
+        };
+
+        let json = serde_json::to_string(&batch).unwrap();
+        assert!(
+            json.contains(r#""grouping":{"p":80000}"#),
+            "json should embed priority rate object, got: {json}"
+        );
+
+        let parsed: BulkOrder = serde_json::from_str(&json).unwrap();
+        assert!(matches!(
+            parsed.grouping,
+            OrderGrouping::PriorityRate(80_000)
+        ));
+    }
 }
