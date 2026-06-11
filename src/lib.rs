@@ -21,4 +21,4 @@ pub use signature::*;
 pub use ws::*;
 
 pub use ethers::signers::{LocalWallet, Signer};
-pub use ethers::types::H160;
+pub use ethers::types::{RecoveryMessage, Signature, H160, H256};

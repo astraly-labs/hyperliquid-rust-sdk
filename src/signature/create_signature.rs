@@ -11,14 +11,26 @@ pub fn sign_l1_action(
     connection_id: H256,
     is_mainnet: bool,
 ) -> Result<Signature> {
+    sign_hash(l1_action_digest(connection_id, is_mainnet)?, wallet)
+}
+
+/// EIP-712 digest that [`sign_l1_action`] signs for the given
+/// `connection_id`: the `Agent { source, connectionId }` struct under the
+/// `Exchange / 1 / chainId 1337` domain, where `source` is `"a"` on
+/// mainnet and `"b"` on testnet.
+///
+/// Exposed so verifiers can recover the signer of an L1-action signature
+/// they did not produce, e.g.
+/// `signature.recover(RecoveryMessage::Hash(digest))`.
+pub fn l1_action_digest(connection_id: H256, is_mainnet: bool) -> Result<H256> {
     let source = if is_mainnet { "a" } else { "b" }.to_string();
-    sign_typed_data(
-        &l1::Agent {
-            source,
-            connection_id,
-        },
-        wallet,
-    )
+    let encoded = l1::Agent {
+        source,
+        connection_id,
+    }
+    .encode_eip712()
+    .map_err(|e| Error::Eip712(e.to_string()))?;
+    Ok(H256::from(encoded))
 }
 
 pub fn sign_typed_data<T: Eip712>(payload: &T, wallet: &LocalWallet) -> Result<Signature> {
@@ -75,6 +87,27 @@ mod tests {
             sign_l1_action(&wallet, connection_id, false)?.to_string(),
             expected_testnet_sig
         );
+        Ok(())
+    }
+
+    #[test]
+    fn test_l1_action_digest_recovers_signer() -> Result<()> {
+        use ethers::signers::Signer;
+        use ethers::types::RecoveryMessage;
+
+        let wallet = get_wallet()?;
+        let connection_id =
+            H256::from_str("0xde6c4037798a4434ca03cd05f00e3b803126221375cd1e7eaaaf041768be06eb")
+                .map_err(|e| Error::GenericParse(e.to_string()))?;
+
+        for is_mainnet in [true, false] {
+            let sig = sign_l1_action(&wallet, connection_id, is_mainnet)?;
+            let digest = l1_action_digest(connection_id, is_mainnet)?;
+            let recovered = sig
+                .recover(RecoveryMessage::Hash(digest))
+                .map_err(|e| Error::SignatureFailure(e.to_string()))?;
+            assert_eq!(recovered, wallet.address(), "is_mainnet={is_mainnet}");
+        }
         Ok(())
     }
 
